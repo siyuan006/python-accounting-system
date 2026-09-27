@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 .idea/
+data/
+logs/
+backup/
+exports/
+.pytest_cache/
+accounts.db

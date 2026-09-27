@@ -1,15 +1,30 @@
-from account import (
-    add_account,
-    show_accounts,
-    delete_account,
-    update_account,
-    count_money,
-    show_accounts_by_date,
-    count_money_by_date
-)
+from account_manager import AccountManager
+from export import export_accounts
+from backup import backup_database, restore_database
 from database import create_table
 
+
+
 create_table()
+manager = AccountManager()
+actions = {
+    "1": manager.show_accounts,
+    "2": manager.add_account,
+    "3": manager.count_money,
+    "4":manager.delete_account,
+    "5": manager.update_account,
+    "6": manager.show_accounts_by_date,
+    "7": manager.show_accounts_by_month,
+    "8": manager.count_money_by_date,
+    "9": manager.count_money_by_month,
+    "10":manager.category_statistics,
+    '11':manager.sort_menu,
+    "12": manager.search_menu,
+    '13':manager.search_accounts_by_date_range,
+    '14':export_accounts,
+    "15": backup_database,
+    "16": restore_database
+ }
 while True:
     print('=====================')
     print('      我的记账软件      ')
@@ -20,32 +35,26 @@ while True:
     print('4.删除账单')
     print('5.修改账单')
     print('6.按日期查看账单')
-    print('7.查询日期统计')
-    print('8.退出')
-    try:
-        choice = int(input('需要进行的操作：'))
-    except ValueError:
-        print('输入错误')
-        continue
-    if choice == 1:
-        show_accounts()
-    elif choice == 2:
-        add_account()
-    elif choice == 3:
-        count_money()
-    elif choice == 4:
-        delete_account()
-    elif choice == 5:
-        update_account()
-    elif choice == 6:
-        show_accounts_by_date()
-    elif choice == 7:
-        count_money_by_date()
-    elif choice == 8:
-        break
-    else:
-        print('请输入1-8')
+    print('7.按月份查看账单')
+    print('8.按日期统计账单')
+    print('9.按月份统计账单')
+    print('10.分类统计')
+    print('11.排序')
+    print('12.搜索账单')
+    print('13.日期范围统计')
+    print('14.导出账单')
+    print('15.备份数据库')
+    print('16.恢复数据库')
+    print('17.退出')
 
+    choice = input('需要进行的操作：')
+    if choice == "16":
+        break
+
+    if choice in actions:
+        actions[choice]()
+    else:
+        print("请输入1-17")
 
 
 
