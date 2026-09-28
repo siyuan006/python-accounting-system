@@ -1,8 +1,31 @@
 from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtWidgets import QAbstractItemView, QDateEdit, QDialog
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QDateEdit,
+    QDialog,
+    QMenu,
+)
 
+import pytest
+
+import backup
 import database
+import export
 import GUI
+
+
+@pytest.fixture(autouse=True)
+def no_modal_dialogs(monkeypatch):
+    """未被用例显式打桩的模态弹窗应立即失败，而不是把测试挂死。"""
+
+    def explode(name):
+        def _fail(*args, **kwargs):
+            raise AssertionError(f"测试中不应弹出 QMessageBox.{name}()")
+
+        return _fail
+
+    for name in ("information", "warning", "critical", "question", "about"):
+        monkeypatch.setattr(GUI.QMessageBox, name, explode(name))
 
 
 def days_ago(days):
@@ -524,3 +547,252 @@ def test_selected_account_warns_when_nothing_selected(qt_app, gui_db, monkeypatc
 
     assert window._selected_account() is None
     assert len(calls) == 1
+
+
+# =========================
+# MainWindow：增删改与菜单
+# =========================
+
+def stub_question(monkeypatch, answer):
+    monkeypatch.setattr(
+        GUI.QMessageBox, "question", lambda *args, **kwargs: answer
+    )
+
+
+def test_delete_removes_row_and_refreshes_statistics(qt_app, gui_db, monkeypatch):
+    stub_question(monkeypatch, GUI.QMessageBox.StandardButton.Yes)
+    database.insert_account("工资", 5000, "收入", days_ago(5))
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    window = make_window()
+    window.table.setCurrentCell(row_of(window, "餐饮"), 0)
+
+    window.delete_account()
+
+    assert window.table.rowCount() == 1
+    assert len(database.get_accounts()) == 1
+    assert window.statistics.expense_card.amount_label.text() == "¥ 0.00"
+    assert window.statistics.income_card.amount_label.text() == "¥ 5,000.00"
+
+
+def test_delete_aborts_when_user_declines(qt_app, gui_db, monkeypatch):
+    stub_question(monkeypatch, GUI.QMessageBox.StandardButton.No)
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    window = make_window()
+    window.table.setCurrentCell(row_of(window, "餐饮"), 0)
+
+    window.delete_account()
+
+    assert window.table.rowCount() == 1
+    assert len(database.get_accounts()) == 1
+
+
+def test_delete_without_selection_changes_nothing(qt_app, gui_db, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(
+        GUI.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    window = make_window()
+    window.table.clearSelection()
+    window.table.setCurrentCell(-1, -1)
+
+    window.delete_account()
+
+    assert len(database.get_accounts()) == 1
+    assert len(warnings) == 1
+
+
+def test_refresh_keeps_active_filter_after_delete(qt_app, gui_db, monkeypatch):
+    stub_question(monkeypatch, GUI.QMessageBox.StandardButton.Yes)
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+    database.insert_account("餐饮晚", 50, "支出", days_ago(3))
+    database.insert_account("工资", 5000, "收入", days_ago(5))
+
+    window = make_window()
+    window.filter_panel.keyword_input.setText("餐饮")
+    window.filter_panel.emit_query()
+    assert window.table.rowCount() == 2
+
+    window.table.setCurrentCell(row_of(window, "餐饮晚"), 0)
+    window.delete_account()
+
+    assert window.table.rowCount() == 1
+    assert window.filter_panel.keyword_input.text() == "餐饮"
+
+
+def test_add_account_dialog_writes_through(qt_app, gui_db, monkeypatch):
+    """用桩替换 exec()，模拟用户在对话框里填好并点保存。"""
+    def fake_exec(dialog):
+        dialog.name_input.setText("工资")
+        dialog.price_input.setText("5000")
+        dialog.type_input.setCurrentText("收入")
+        dialog.save_account()
+        return dialog.result()
+
+    monkeypatch.setattr(GUI.AccountDialog, "exec", fake_exec)
+
+    window = make_window()
+    window.add_account()
+
+    assert len(database.get_accounts()) == 1
+    assert window.table.rowCount() == 1
+    assert window.statistics.income_card.amount_label.text() == "¥ 5,000.00"
+
+
+def test_update_account_dialog_writes_through(qt_app, gui_db, monkeypatch):
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    def fake_exec(dialog):
+        dialog.price_input.setText("250")
+        dialog.save_account()
+        return dialog.result()
+
+    monkeypatch.setattr(GUI.AccountDialog, "exec", fake_exec)
+
+    window = make_window()
+    window.table.setCurrentCell(row_of(window, "餐饮"), 0)
+    window.update_account()
+
+    accounts = database.get_accounts()
+    assert accounts[0].price == 250
+    assert window.statistics.expense_card.amount_label.text() == "¥ 250.00"
+
+
+def test_update_account_opens_prefilled_dialog(qt_app, gui_db, monkeypatch):
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    captured = {}
+
+    def fake_exec(dialog):
+        captured["mode"] = dialog.mode
+        captured["name"] = dialog.name_input.text()
+        return 0
+
+    monkeypatch.setattr(GUI.AccountDialog, "exec", fake_exec)
+
+    window = make_window()
+    window.table.setCurrentCell(row_of(window, "餐饮"), 0)
+    window.update_account()
+
+    assert captured == {"mode": "edit", "name": "餐饮"}
+
+
+def test_double_click_opens_editor(qt_app, gui_db, monkeypatch):
+    database.insert_account("餐饮", 100, "支出", days_ago(4))
+
+    captured = {}
+    monkeypatch.setattr(
+        GUI.AccountDialog,
+        "exec",
+        lambda dialog: captured.update(mode=dialog.mode) or 0,
+    )
+
+    window = make_window()
+    row = row_of(window, "餐饮")
+    window.table.setCurrentCell(row, 0)
+    item = window.table.item(row, GUI.COL_NAME)
+    window.table.itemDoubleClicked.emit(item)
+
+    assert captured["mode"] == "edit"
+
+
+def test_menu_and_toolbar_expose_all_actions(qt_app, gui_db):
+    window = make_window()
+
+    menu_titles = [
+        action.text()
+        for menu in window.menuBar().findChildren(QMenu)
+        for action in menu.actions()
+    ]
+
+    for expected in ["导出为 CSV", "退出", "添加账单", "修改账单", "删除账单",
+                     "备份数据库", "恢复数据库", "关于"]:
+        assert expected in menu_titles
+
+
+def test_about_dialog_opens(qt_app, gui_db, monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        GUI.QMessageBox, "about", lambda *args, **kwargs: captured.append(args)
+    )
+
+    window = make_window()
+    window.show_about()
+
+    assert len(captured) == 1
+
+
+def test_export_csv_writes_file(qt_app, gui_db, monkeypatch, tmp_path):
+    # GUI.export_csv 用 GUI 自己的 EXPORT_DIR 做存在性检查，
+    # 真正的写文件发生在 export 模块里 —— 两处都要指到 tmp_path。
+    monkeypatch.setattr(GUI, "EXPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(export, "EXPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        GUI.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.export_csv()
+
+    exported = (tmp_path / "accounts.csv").read_text(encoding="utf-8-sig")
+    assert "工资" in exported
+
+
+def test_backup_writes_file(qt_app, gui_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(GUI, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(backup, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(backup, "DATABASE", database.DATABASE)
+    monkeypatch.setattr(
+        GUI.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.backup_db()
+
+    assert (tmp_path / "accounts_backup.db").exists()
+
+
+def test_restore_warns_when_no_backup_exists(qt_app, gui_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(GUI, "BACKUP_DIR", str(tmp_path))
+    warnings = []
+    monkeypatch.setattr(
+        GUI.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+
+    window = make_window()
+    window.restore_db()
+
+    assert len(warnings) == 1
+
+
+def test_restore_never_blocks_on_stdin(qt_app, gui_db, monkeypatch, tmp_path):
+    """恢复备份若触发 input()，GUI 会挂死。"""
+    monkeypatch.setattr(GUI, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(backup, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(backup, "DATABASE", str(tmp_path / "live.db"))
+
+    stub_question(monkeypatch, GUI.QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(
+        GUI.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("恢复流程不应调用 input()")
+
+    monkeypatch.setattr("builtins.input", explode)
+
+    (tmp_path / "accounts_backup.db").write_bytes(b"backup-payload")
+
+    window = make_window()
+    window.restore_db()
+
+    assert (tmp_path / "live.db").read_bytes() == b"backup-payload"

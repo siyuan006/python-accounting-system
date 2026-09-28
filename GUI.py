@@ -445,6 +445,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
 
         self.filter_panel.queryRequested.connect(self.run_query)
+        self.table.itemDoubleClicked.connect(self.update_account)
 
         self.refresh()
 
@@ -510,6 +511,10 @@ class MainWindow(QMainWindow):
         toolbar.addAction("＋ 添加账单", self.add_account)
         toolbar.addAction("✎ 修改账单", self.update_account)
         toolbar.addAction("－ 删除账单", self.delete_account)
+        toolbar.addSeparator()
+        toolbar.addAction("导出", self.export_csv)
+        toolbar.addAction("备份", self.backup_db)
+        toolbar.addAction("恢复", self.restore_db)
 
     # =========================
     # 数据流：表格与统计的唯一数据源
@@ -599,7 +604,7 @@ class MainWindow(QMainWindow):
         )
 
     # =========================
-    # 增删改（Task 6 补全菜单与实现）
+    # 增删改
     # =========================
 
     def _selected_account(self):
@@ -622,25 +627,92 @@ class MainWindow(QMainWindow):
         return None
 
     def add_account(self):
-        raise NotImplementedError("Task 6 实现")
+        dialog = AccountDialog("add", parent=self)
+        if dialog.exec():
+            self.refresh()
 
     def update_account(self):
-        raise NotImplementedError("Task 6 实现")
+        account = self._selected_account()
+        if account is None:
+            return
+
+        dialog = AccountDialog("edit", account, self)
+        if dialog.exec():
+            self.refresh()
 
     def delete_account(self):
-        raise NotImplementedError("Task 6 实现")
+        account = self._selected_account()
+        if account is None:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除「{account.name}」（{account.price:,.2f} 元）吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if database.delete_account_db(account.id):
+            self.refresh()
+        else:
+            QMessageBox.critical(self, "删除失败", "没有找到这条账单")
+
+    # =========================
+    # 导出 / 备份 / 恢复
+    # =========================
 
     def export_csv(self):
-        raise NotImplementedError("Task 6 实现")
+        export_accounts()
+
+        path = os.path.join(EXPORT_DIR, "accounts.csv")
+        if os.path.exists(path):
+            QMessageBox.information(self, "导出成功", f"导出文件：\n{path}")
+        else:
+            QMessageBox.warning(
+                self, "导出失败", "导出失败，详情见 logs/app.log"
+            )
 
     def backup_db(self):
-        raise NotImplementedError("Task 6 实现")
+        backup_database()
+
+        path = os.path.join(BACKUP_DIR, "accounts_backup.db")
+        if os.path.exists(path):
+            QMessageBox.information(self, "备份成功", f"备份文件：\n{path}")
+        else:
+            QMessageBox.warning(self, "备份失败", "找不到数据库文件")
 
     def restore_db(self):
-        raise NotImplementedError("Task 6 实现")
+        path = os.path.join(BACKUP_DIR, "accounts_backup.db")
+        if not os.path.exists(path):
+            QMessageBox.warning(
+                self, "恢复失败", "还没有备份文件，请先执行备份"
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认恢复",
+            "恢复会用备份覆盖当前全部账单数据，且不可撤销。确定继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        restore_database(confirm=False)
+
+        QMessageBox.information(self, "恢复成功", "数据已恢复，界面已刷新。")
+        self.refresh()
 
     def show_about(self):
-        raise NotImplementedError("Task 6 实现")
+        QMessageBox.about(
+            self,
+            "关于",
+            "我的记账软件\n\nPython + SQLite + PyQt6\n个人学习项目",
+        )
 
 
 def main():
