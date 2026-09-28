@@ -349,3 +349,13 @@ def test_get_money_by_category_by_month(test_db):
     )
 
     assert ("餐饮", 50) in result
+
+def test_get_accounts_by_date_range_uses_configured_database(test_db):
+    """缺陷 #6 回归：必须走 database.DATABASE，而不是硬编码的 accounts.db。"""
+    database.insert_account("工资", 5000, "收入", "2026-09-01")
+    database.insert_account("餐饮", 100, "支出", "2026-09-25")
+    database.insert_account("购物", 200, "支出", "2026-10-01")
+
+    accounts = database.get_accounts_by_date_range("2026-09-01", "2026-09-30")
+
+    assert len(accounts) == 2

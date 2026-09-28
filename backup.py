@@ -25,14 +25,15 @@ def backup_database():
         print("找不到数据库文件")
 
 
-def restore_database():
-    confirm = input(
-        "恢复数据库会覆盖当前数据，确定吗？(yes/no)："
-    )
+def restore_database(confirm=True):
+    if confirm:
+        answer = input(
+            "恢复数据库会覆盖当前数据，确定吗？(yes/no)："
+        )
 
-    if confirm.lower() != "yes":
-        print("已取消恢复")
-        return
+        if answer.lower() != "yes":
+            print("已取消恢复")
+            return
 
     try:
         backup_file = os.path.join(
