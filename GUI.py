@@ -158,6 +158,84 @@ class AccountDialog(QDialog):
             )
 
 
+class StatisticsBar(QWidget):
+    """总收入 / 总支出 / 余额三张卡片。纯展示，不含业务逻辑。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        self.income_card = self._build_card("总收入")
+        self.expense_card = self._build_card("总支出")
+        self.balance_card = self._build_card("余额")
+
+        for card in (self.income_card, self.expense_card, self.balance_card):
+            layout.addWidget(card)
+
+        self.set_stats(0.0, 0.0, 0, 0)
+
+    @staticmethod
+    def _build_card(title):
+        card = QWidget()
+        card.setObjectName("StatCard")
+
+        title_label = QLabel(title)
+        title_label.setObjectName("StatTitle")
+
+        amount_label = QLabel("¥ 0.00")
+        amount_label.setObjectName("StatAmount")
+
+        font = amount_label.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        amount_label.setFont(font)
+
+        count_label = QLabel("0 笔")
+        count_label.setObjectName("StatCount")
+
+        card_layout = QVBoxLayout(card)
+        card_layout.addWidget(title_label)
+        card_layout.addWidget(amount_label)
+        card_layout.addWidget(count_label)
+
+        card.title_label = title_label
+        card.amount_label = amount_label
+        card.count_label = count_label
+
+        return card
+
+    def set_stats(self, income, expense, income_count, expense_count):
+        balance = income - expense
+
+        self._apply(
+            self.income_card,
+            income,
+            f"{income_count} 笔",
+            INCOME_COLOR,
+        )
+        self._apply(
+            self.expense_card,
+            expense,
+            f"{expense_count} 笔",
+            EXPENSE_COLOR,
+        )
+        self._apply(
+            self.balance_card,
+            balance,
+            f"共 {income_count + expense_count} 笔",
+            EXPENSE_COLOR if balance < 0 else INCOME_COLOR,
+        )
+
+    @staticmethod
+    def _apply(card, amount, count_text, color):
+        card.amount_label.setText(f"¥ {amount:,.2f}")
+        card.count_label.setText(count_text)
+        card.amount_label.setStyleSheet(f"color: {color};")
+
+
 class AddAccountDialog(QDialog):
 
     def __init__(self, parent=None):

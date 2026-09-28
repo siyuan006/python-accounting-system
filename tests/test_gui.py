@@ -122,3 +122,42 @@ def test_dialog_updates_existing_account(qt_app, gui_db):
     accounts = database.get_accounts()
     assert len(accounts) == 1
     assert accounts[0].price == 20
+
+
+# =========================
+# StatisticsBar
+# =========================
+
+def test_statistics_bar_starts_at_zero(qt_app):
+    bar = GUI.StatisticsBar()
+
+    assert bar.income_card.amount_label.text() == "¥ 0.00"
+    assert bar.expense_card.amount_label.text() == "¥ 0.00"
+    assert bar.balance_card.amount_label.text() == "¥ 0.00"
+
+
+def test_statistics_bar_formats_amounts_with_thousands_separator(qt_app):
+    bar = GUI.StatisticsBar()
+    bar.set_stats(8500.0, 3200.0, 3, 7)
+
+    assert bar.income_card.amount_label.text() == "¥ 8,500.00"
+    assert bar.income_card.count_label.text() == "3 笔"
+    assert bar.expense_card.amount_label.text() == "¥ 3,200.00"
+    assert bar.expense_card.count_label.text() == "7 笔"
+    assert bar.balance_card.amount_label.text() == "¥ 5,300.00"
+    assert bar.balance_card.count_label.text() == "共 10 笔"
+
+
+def test_statistics_bar_negative_balance_uses_expense_color(qt_app):
+    bar = GUI.StatisticsBar()
+    bar.set_stats(100.0, 400.0, 1, 1)
+
+    assert bar.balance_card.amount_label.text() == "¥ -300.00"
+    assert GUI.EXPENSE_COLOR in bar.balance_card.amount_label.styleSheet()
+
+
+def test_statistics_bar_positive_balance_uses_income_color(qt_app):
+    bar = GUI.StatisticsBar()
+    bar.set_stats(400.0, 100.0, 1, 1)
+
+    assert GUI.INCOME_COLOR in bar.balance_card.amount_label.styleSheet()
