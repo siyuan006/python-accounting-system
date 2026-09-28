@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDateEdit,
@@ -119,6 +120,87 @@ def test_dialog_saves_new_account(qt_app, gui_db):
     assert accounts[0].name == "早餐"
     assert accounts[0].price == 15.5
     assert accounts[0].type == "支出"
+
+
+def press_enter(widget):
+    """走完整的按键通道，含 ShortcutOverride，才测得到默认按钮的竞争。"""
+    QTest.keyClick(widget, Qt.Key.Key_Return)
+
+
+def test_enter_in_name_moves_to_price(qt_app, gui_db):
+    dialog = GUI.AccountDialog("add")
+    dialog.name_input.setText("早餐")
+    dialog.name_input.setFocus()
+
+    press_enter(dialog.name_input)
+
+    assert dialog.focusWidget() is dialog.price_input
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_enter_walks_the_whole_form(qt_app, gui_db):
+    dialog = GUI.AccountDialog("add")
+    dialog.name_input.setFocus()
+
+    for field, expected_next in (
+        (dialog.name_input, dialog.price_input),
+        (dialog.price_input, dialog.type_input),
+        (dialog.type_input, dialog.date_input),
+    ):
+        press_enter(field)
+        assert dialog.focusWidget() is expected_next, (
+            f"{field} 回车后没有跳到下一个框"
+        )
+
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_enter_in_last_field_saves(qt_app, gui_db):
+    dialog = GUI.AccountDialog("add")
+    dialog.name_input.setText("早餐")
+    dialog.price_input.setText("15.5")
+    dialog.type_input.setCurrentText("支出")
+    dialog.date_input.setFocus()
+
+    press_enter(dialog.date_input)
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert [a.name for a in database.get_accounts()] == ["早餐"]
+
+
+def test_enter_in_last_field_still_validates(qt_app, gui_db, monkeypatch):
+    """最后一个框回车等于点保存，校验不能因此被跳过。"""
+    warnings = []
+    monkeypatch.setattr(
+        GUI.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args),
+    )
+
+    dialog = GUI.AccountDialog("add")
+    dialog.name_input.setText("   ")
+    dialog.date_input.setFocus()
+
+    press_enter(dialog.date_input)
+
+    assert len(warnings) == 1
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert database.get_accounts() == []
+    assert dialog.focusWidget() is dialog.name_input
+
+
+def test_enter_does_not_break_search_box(qt_app, gui_db):
+    """主窗口搜索框的回车是「查询」，不能被对话框的实现顺带改掉。"""
+    database.insert_account("早餐", 15, "支出", days_ago(1))
+
+    window = make_window()
+    window.filter_panel.keyword_input.setText("早")
+    window.filter_panel.keyword_input.setFocus()
+
+    press_enter(window.filter_panel.keyword_input)
+
+    assert window.table.rowCount() == 1
+    assert window.table.item(0, GUI.COL_NAME).text() == "早餐"
 
 
 def test_dialog_prefills_existing_account(qt_app, gui_db):
@@ -516,6 +598,71 @@ def test_amount_column_sorts_numerically(qt_app, gui_db):
 
     assert window.table.item(0, GUI.COL_NAME).text() == "小"
     assert window.table.item(1, GUI.COL_NAME).text() == "大"
+
+
+def test_id_column_counts_from_one(qt_app, gui_db):
+    """ID 列是行号，不是主键：删掉第一条后仍要从 1 开始。"""
+    database.insert_account("甲", 10, "支出", days_ago(3))
+    database.insert_account("乙", 20, "支出", days_ago(2))
+    database.insert_account("丙", 30, "支出", days_ago(1))
+
+    accounts = database.get_accounts()
+    database.delete_account_db(accounts[0].id)
+
+    window = make_window()
+
+    assert [
+        window.table.item(row, GUI.COL_ID).text()
+        for row in range(window.table.rowCount())
+    ] == ["1", "2"]
+
+
+def test_id_column_renumbers_after_sort(qt_app, gui_db):
+    """先插「大」，主键顺序与金额顺序相反，才区分得开行号和主键。"""
+    database.insert_account("大", 1000, "支出", days_ago(1))
+    database.insert_account("小", 9, "支出", days_ago(2))
+
+    window = make_window()
+    window.table.sortItems(GUI.COL_AMOUNT, Qt.SortOrder.AscendingOrder)
+
+    assert window.table.item(0, GUI.COL_NAME).text() == "小"
+    assert window.table.item(0, GUI.COL_ID).text() == "1"
+    assert window.table.item(1, GUI.COL_NAME).text() == "大"
+    assert window.table.item(1, GUI.COL_ID).text() == "2"
+
+
+def test_id_column_renumbers_when_sorting_by_header_click(qt_app, gui_db):
+    """点表头排序走的是 QHeaderView 的信号，不是直接调 sortItems。"""
+    database.insert_account("大", 1000, "支出", days_ago(1))
+    database.insert_account("小", 9, "支出", days_ago(2))
+
+    window = make_window()
+    window.table.horizontalHeader().setSortIndicator(
+        GUI.COL_AMOUNT, Qt.SortOrder.AscendingOrder
+    )
+
+    assert window.table.item(0, GUI.COL_NAME).text() == "小"
+    assert window.table.item(0, GUI.COL_ID).text() == "1"
+    assert window.table.item(1, GUI.COL_ID).text() == "2"
+
+
+def test_displayed_id_is_not_the_database_id(qt_app, gui_db):
+    """行号 1 对应的数据库主键可能不是 1——两者必须分开存。"""
+    database.insert_account("甲", 10, "支出", days_ago(3))
+    database.insert_account("乙", 20, "支出", days_ago(2))
+
+    accounts = database.get_accounts()
+    database.delete_account_db(accounts[0].id)
+    remaining = database.get_accounts()[0]
+
+    window = make_window()
+
+    assert window.table.item(0, GUI.COL_ID).text() == "1"
+    assert (
+        window.table.item(0, GUI.COL_ID).data(GUI.ACCOUNT_ID_ROLE)
+        == remaining.id
+    )
+    assert remaining.id != 1
 
 
 def test_selected_account_looks_up_by_id_not_row(qt_app, gui_db, monkeypatch):

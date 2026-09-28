@@ -5,7 +5,7 @@ import sys
 
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QDate, Qt, pyqtSignal
+from PyQt6.QtCore import QDate, QEvent, Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -40,6 +40,9 @@ EXPENSE_COLOR = "#c0392b"
 
 COL_ID, COL_NAME, COL_AMOUNT, COL_TYPE, COL_DATE = range(5)
 HEADERS = ["ID", "名称", "金额", "类型", "日期"]
+
+# ID 列显示的是行号（1、2、3……），真正的主键另存在这个 role 里。
+ACCOUNT_ID_ROLE = Qt.ItemDataRole.UserRole
 
 TYPE_FILTER_ALL = "全部"
 
@@ -221,6 +224,52 @@ class AccountDialog(QDialog):
         self.save_button.clicked.connect(self.save_account)
         self.cancel_button.clicked.connect(self.reject)
         self.name_input.setFocus()
+
+        # 回车依次往下跳，最后一个框回车等于「保存」。
+        self._enter_chain = [
+            self.name_input, self.price_input, self.type_input, self.date_input
+        ]
+        for field in self._enter_chain:
+            field.installEventFilter(self)
+
+    @staticmethod
+    def _is_enter(event):
+        return event.type() in (
+            QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride
+        ) and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+
+    @staticmethod
+    def _popup_is_open(field):
+        """下拉框/日历弹开时，回车该由它自己收起来，而不是跳走。"""
+        if isinstance(field, QComboBox):
+            return field.view().isVisible()
+
+        if isinstance(field, QDateEdit):
+            calendar = field.calendarWidget()
+            return calendar is not None and calendar.isVisible()
+
+        return False
+
+    def eventFilter(self, watched, event):
+        if watched not in self._enter_chain or not self._is_enter(event):
+            return super().eventFilter(watched, event)
+
+        if self._popup_is_open(watched):
+            return super().eventFilter(watched, event)
+
+        # 吃掉 ShortcutOverride，否则回车会被 QDialog 的默认按钮抢走。
+        if event.type() == QEvent.Type.ShortcutOverride:
+            event.accept()
+            return True
+
+        index = self._enter_chain.index(watched)
+
+        if index + 1 < len(self._enter_chain):
+            self._enter_chain[index + 1].setFocus()
+        else:
+            self.save_button.click()
+
+        return True
 
     def _prefill(self, account):
         self.name_input.setText(account.name)
@@ -442,6 +491,11 @@ class FilterPanel(QWidget):
             else:
                 layout.addWidget(item)
 
+        # date_stack 的宽度由最宽的那一页（日期范围）决定，按日期/按月份
+        # 这两页会被拉伸到同样的宽度。没有这个弹簧，多出来的宽度会被平均
+        # 分给 QLabel，标签文字留在原处、控件却被推到两百像素开外。
+        layout.addStretch()
+
         return container
 
     def build_query(self):
@@ -481,6 +535,7 @@ class MainWindow(QMainWindow):
         self.resize(1040, 700)
 
         self.accounts = []
+        self._renumbering = False
 
         self.statistics = StatisticsBar()
         self.filter_panel = FilterPanel()
@@ -507,6 +562,11 @@ class MainWindow(QMainWindow):
 
         self.filter_panel.queryRequested.connect(self.run_query)
         self.table.itemDoubleClicked.connect(self.update_account)
+
+        # 排序后行序会变，ID 列要跟着重新编号。用 model 的 layoutChanged
+        # 而不是表头的 sortIndicatorChanged：后者在真正的排序之前就发出去了
+        # （setSortingEnabled 会把 Qt 内部的排序槽接到我们的槽后面）。
+        self.table.model().layoutChanged.connect(self._renumber_id_column)
 
         self.refresh()
 
@@ -610,9 +670,9 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(len(accounts))
 
         for row, account in enumerate(accounts):
-            self.table.setItem(
-                row, COL_ID, NumericTableItem(account.id, str(account.id))
-            )
+            id_item = NumericTableItem(account.id, str(account.id))
+            id_item.setData(ACCOUNT_ID_ROLE, account.id)
+            self.table.setItem(row, COL_ID, id_item)
             self.table.setItem(
                 row, COL_NAME, self._readonly_item(account.name)
             )
@@ -640,6 +700,25 @@ class MainWindow(QMainWindow):
             )
 
         self.table.setSortingEnabled(True)
+        self._renumber_id_column()
+
+    def _renumber_id_column(self, *_):
+        """ID 列永远是从上到下的 1..N，跟数据库主键无关。
+
+        只改显示文本，不动排序用的 _value——否则按 ID 列排序时会拿新值
+        再排一次，编号会翻过来。
+        """
+        if self._renumbering:
+            return
+
+        self._renumbering = True
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, COL_ID)
+                if item is not None:
+                    item.setText(str(row + 1))
+        finally:
+            self._renumbering = False
 
     @staticmethod
     def _readonly_item(text):
@@ -678,7 +757,10 @@ class MainWindow(QMainWindow):
         if id_item is None:
             return None
 
-        account_id = int(id_item.text())
+        # 读主键，不能读 id_item.text()——那只是行号。
+        account_id = id_item.data(ACCOUNT_ID_ROLE)
+        if account_id is None:
+            return None
 
         for account in self.accounts:
             if account.id == account_id:

@@ -48,7 +48,7 @@ while True:
     print('17.退出')
 
     choice = input('需要进行的操作：')
-    if choice == "16":
+    if choice == "17":
         break
 
     if choice in actions:
