@@ -1,38 +1,163 @@
+"""PyQt6 桌面记账界面。"""
+
+import os
 import sys
 
+from dataclasses import dataclass
+
+from PyQt6.QtCore import QDate, Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
-    QMainWindow,
-    QWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QPushButton,
-    QDialog,
-    QLineEdit,
     QComboBox,
     QDateEdit,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
-    QVBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
     QMessageBox,
-    QLabel
+    QPushButton,
+    QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
 
-from PyQt6.QtCore import QDate
+import database
+from backup import backup_database, restore_database
+from config import BACKUP_DIR, EXPORT_DIR
+from database import create_table
+from export import export_accounts
 
-from database import (
-    get_accounts,
-    insert_account,
-    delete_account_db,
-    update_account_db,
-    get_money_count,
-    get_account_by_date,
-    get_account_by_month,
-    get_money_count_by_date,
-    get_money_count_by_month,
-    get_accounts_by_date_range,
-    get_money_count_by_date_range
-)
+INCOME_COLOR = "#1a7f37"
+EXPENSE_COLOR = "#c0392b"
+
+COL_ID, COL_NAME, COL_AMOUNT, COL_TYPE, COL_DATE = range(5)
+HEADERS = ["ID", "名称", "金额", "类型", "日期"]
+
+TYPE_FILTER_ALL = "全部"
+
+STYLE_SHEET = ""
+
+
+class ValidationError(Exception):
+    """表单校验失败。widget 指向需要重新获得焦点的输入控件。"""
+
+    def __init__(self, message, widget=None):
+        super().__init__(message)
+        self.message = message
+        self.widget = widget
+
+
+class AccountDialog(QDialog):
+    """添加 / 修改账单的共用对话框。mode 取 "add" 或 "edit"。"""
+
+    def __init__(self, mode="add", account=None, parent=None):
+        super().__init__(parent)
+
+        self.mode = mode
+        self.account = account
+
+        self.setWindowTitle("添加账单" if mode == "add" else "修改账单")
+        self.resize(360, 240)
+
+        self.name_input = QLineEdit()
+        self.price_input = QLineEdit()
+        self.price_input.setPlaceholderText("例如 25.50")
+
+        self.type_input = QComboBox()
+        self.type_input.addItems(["收入", "支出"])
+
+        self.date_input = QDateEdit()
+        self.date_input.setCalendarPopup(True)
+        self.date_input.setDisplayFormat("yyyy-MM-dd")
+        self.date_input.setDate(QDate.currentDate())
+
+        if account is not None:
+            self._prefill(account)
+
+        form_layout = QFormLayout()
+        form_layout.addRow("名称：", self.name_input)
+        form_layout.addRow("金额：", self.price_input)
+        form_layout.addRow("类型：", self.type_input)
+        form_layout.addRow("日期：", self.date_input)
+
+        self.save_button = QPushButton("保存")
+        self.save_button.setObjectName("PrimaryButton")
+        self.cancel_button = QPushButton("取消")
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.save_button)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form_layout)
+        layout.addLayout(button_layout)
+
+        self.save_button.clicked.connect(self.save_account)
+        self.cancel_button.clicked.connect(self.reject)
+        self.name_input.setFocus()
+
+    def _prefill(self, account):
+        self.name_input.setText(account.name)
+        self.price_input.setText(f"{account.price:g}")
+        self.type_input.setCurrentText(account.type)
+
+        parsed = QDate.fromString(account.date, "yyyy-MM-dd")
+        if parsed.isValid():
+            self.date_input.setDate(parsed)
+
+    def read_form(self):
+        """校验并返回 (name, price, type, date)。失败时抛 ValidationError。"""
+        name = self.name_input.text().strip()
+        if not name:
+            raise ValidationError("名称不能为空", self.name_input)
+
+        try:
+            price = float(self.price_input.text().strip())
+        except ValueError:
+            raise ValidationError("金额必须是数字", self.price_input)
+
+        if price <= 0:
+            raise ValidationError("金额必须大于 0", self.price_input)
+
+        date = self.date_input.date().toString("yyyy-MM-dd")
+        if date > QDate.currentDate().toString("yyyy-MM-dd"):
+            raise ValidationError("不能添加未来日期的账单", self.date_input)
+
+        return name, price, self.type_input.currentText(), date
+
+    def save_account(self):
+        try:
+            name, price, account_type, date = self.read_form()
+        except ValidationError as error:
+            QMessageBox.warning(self, "输入错误", error.message)
+            if error.widget is not None:
+                error.widget.setFocus()
+            return
+
+        if self.mode == "add":
+            saved = database.insert_account(name, price, account_type, date)
+        else:
+            saved = database.update_account_db(
+                self.account.id, name, price, account_type, date
+            )
+
+        if saved:
+            self.accept()
+        else:
+            QMessageBox.critical(
+                self, "保存失败", "数据库写入失败，详情见 logs/app.log"
+            )
+
+
 class AddAccountDialog(QDialog):
 
     def __init__(self, parent=None):
