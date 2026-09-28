@@ -55,6 +55,45 @@ class ValidationError(Exception):
         self.widget = widget
 
 
+@dataclass
+class Query:
+    """一次查询的全部条件。mode 决定日期参数如何映射到 search_accounts。"""
+
+    mode: str = "全部账单"
+    keyword: str = ""
+    account_type: object = None
+    date: str = ""
+    month: str = ""
+    start_date: str = ""
+    end_date: str = ""
+
+    def to_search_kwargs(self):
+        kwargs = {
+            "keyword": self.keyword or None,
+            "account_type": self.account_type,
+        }
+
+        if self.mode == "按日期":
+            kwargs["start_date"] = self.date
+            kwargs["end_date"] = self.date
+
+        elif self.mode == "按月份":
+            kwargs["account_month"] = self.month
+
+        elif self.mode == "按日期范围":
+            kwargs["start_date"] = self.start_date
+            kwargs["end_date"] = self.end_date
+
+        return kwargs
+
+    @property
+    def is_range_reversed(self):
+        return (
+            self.mode == "按日期范围"
+            and self.start_date > self.end_date
+        )
+
+
 class AccountDialog(QDialog):
     """添加 / 修改账单的共用对话框。mode 取 "add" 或 "edit"。"""
 
@@ -234,6 +273,122 @@ class StatisticsBar(QWidget):
         card.amount_label.setText(f"¥ {amount:,.2f}")
         card.count_label.setText(count_text)
         card.amount_label.setStyleSheet(f"color: {color};")
+
+
+class FilterPanel(QWidget):
+    """查询条件区。发出 queryRequested(Query)，自身不访问数据库。"""
+
+    queryRequested = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.mode_input = QComboBox()
+        self.mode_input.addItems(
+            ["全部账单", "按日期", "按月份", "按日期范围"]
+        )
+
+        self.keyword_input = QLineEdit()
+        self.keyword_input.setPlaceholderText("名称关键词")
+        self.keyword_input.setClearButtonEnabled(True)
+
+        self.type_input = QComboBox()
+        self.type_input.addItems([TYPE_FILTER_ALL, "收入", "支出"])
+
+        self.day_input = self._make_date_edit(QDate.currentDate())
+        self.month_input = self._make_date_edit(
+            QDate.currentDate(), "yyyy-MM"
+        )
+        self.start_input = self._make_date_edit(
+            QDate.currentDate().addMonths(-1)
+        )
+        self.end_input = self._make_date_edit(QDate.currentDate())
+
+        self.date_stack = QStackedWidget()
+        self.date_stack.addWidget(QWidget())
+        self.date_stack.addWidget(self._labeled("日期：", self.day_input))
+        self.date_stack.addWidget(self._labeled("月份：", self.month_input))
+        self.date_stack.addWidget(
+            self._labeled("从", self.start_input, "至", self.end_input)
+        )
+
+        self.search_button = QPushButton("查询")
+        self.search_button.setObjectName("PrimaryButton")
+        self.reset_button = QPushButton("重置")
+
+        first_row = QHBoxLayout()
+        first_row.addWidget(QLabel("查询："))
+        first_row.addWidget(self.mode_input)
+        first_row.addSpacing(12)
+        first_row.addWidget(QLabel("关键词："))
+        first_row.addWidget(self.keyword_input, 1)
+        first_row.addSpacing(12)
+        first_row.addWidget(QLabel("类型："))
+        first_row.addWidget(self.type_input)
+
+        second_row = QHBoxLayout()
+        second_row.addWidget(self.date_stack)
+        second_row.addStretch()
+        second_row.addWidget(self.search_button)
+        second_row.addWidget(self.reset_button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(first_row)
+        layout.addLayout(second_row)
+
+        self.mode_input.currentIndexChanged.connect(
+            self.date_stack.setCurrentIndex
+        )
+        self.search_button.clicked.connect(self.emit_query)
+        self.reset_button.clicked.connect(self.reset)
+        self.keyword_input.returnPressed.connect(self.emit_query)
+
+    @staticmethod
+    def _make_date_edit(date, display_format="yyyy-MM-dd"):
+        editor = QDateEdit()
+        editor.setCalendarPopup(True)
+        editor.setDisplayFormat(display_format)
+        editor.setDate(date)
+        return editor
+
+    @staticmethod
+    def _labeled(*items):
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        for item in items:
+            if isinstance(item, str):
+                layout.addWidget(QLabel(item))
+            else:
+                layout.addWidget(item)
+
+        return container
+
+    def build_query(self):
+        account_type = self.type_input.currentText()
+
+        return Query(
+            mode=self.mode_input.currentText(),
+            keyword=self.keyword_input.text().strip(),
+            account_type=(
+                None if account_type == TYPE_FILTER_ALL else account_type
+            ),
+            date=self.day_input.date().toString("yyyy-MM-dd"),
+            month=self.month_input.date().toString("yyyy-MM"),
+            start_date=self.start_input.date().toString("yyyy-MM-dd"),
+            end_date=self.end_input.date().toString("yyyy-MM-dd"),
+        )
+
+    def emit_query(self):
+        self.queryRequested.emit(self.build_query())
+
+    def reset(self):
+        self.mode_input.setCurrentIndex(0)
+        self.keyword_input.clear()
+        self.type_input.setCurrentIndex(0)
+        self.emit_query()
 
 
 class AddAccountDialog(QDialog):
