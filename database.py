@@ -444,7 +444,7 @@ def get_money_count_by_date_range(start_date, end_date):
 
 def get_accounts_by_date_range(start_date, end_date):
     try:
-        with sqlite3.connect("accounts.db") as conn:
+        with sqlite3.connect(DATABASE) as conn:
             cursor = conn.cursor()
 
             cursor.execute(
