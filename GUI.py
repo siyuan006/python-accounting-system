@@ -43,7 +43,68 @@ HEADERS = ["ID", "名称", "金额", "类型", "日期"]
 
 TYPE_FILTER_ALL = "全部"
 
-STYLE_SHEET = ""
+STYLE_SHEET = """
+QMainWindow, QDialog {
+    background: #f5f6f8;
+}
+QWidget#StatCard {
+    background: #ffffff;
+    border: 1px solid #e3e6ea;
+    border-radius: 10px;
+}
+QLabel#StatTitle {
+    color: #6b7280;
+    font-size: 12px;
+}
+QLabel#StatCount {
+    color: #9aa1ab;
+    font-size: 11px;
+}
+QLabel#EmptyHint {
+    color: #9aa1ab;
+    font-size: 14px;
+}
+QTableWidget {
+    background: #ffffff;
+    alternate-background-color: #fafbfc;
+    border: 1px solid #e3e6ea;
+    gridline-color: #eef0f3;
+}
+QTableWidget::item:selected {
+    background: #dce7ff;
+    color: #111827;
+}
+QHeaderView::section {
+    background: #fafbfc;
+    padding: 6px;
+    border: none;
+    border-bottom: 1px solid #e3e6ea;
+    font-weight: 600;
+}
+QLineEdit, QComboBox, QDateEdit {
+    background: #ffffff;
+    border: 1px solid #d5d9df;
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+QPushButton, QToolButton {
+    background: #ffffff;
+    border: 1px solid #d5d9df;
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+QPushButton:hover, QToolButton:hover {
+    background: #f0f2f5;
+}
+QPushButton#PrimaryButton {
+    background: #2f6fed;
+    color: #ffffff;
+    border: none;
+}
+QPushButton#PrimaryButton:hover {
+    background: #2559c9;
+}
+"""
 
 
 class ValidationError(Exception):

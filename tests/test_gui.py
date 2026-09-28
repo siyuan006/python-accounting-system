@@ -796,3 +796,24 @@ def test_restore_never_blocks_on_stdin(qt_app, gui_db, monkeypatch, tmp_path):
     window.restore_db()
 
     assert (tmp_path / "live.db").read_bytes() == b"backup-payload"
+
+
+# =========================
+# 样式
+# =========================
+
+def test_stylesheet_covers_core_widgets():
+    assert "#StatCard" in GUI.STYLE_SHEET
+    assert "QTableWidget" in GUI.STYLE_SHEET
+    assert "#PrimaryButton" in GUI.STYLE_SHEET
+    assert GUI.STYLE_SHEET.strip() != ""
+
+
+def test_window_applies_stylesheet_without_error(qt_app, gui_db):
+    qt_app.setStyleSheet(GUI.STYLE_SHEET)
+
+    window = make_window()
+
+    assert window.isEnabled()
+
+    qt_app.setStyleSheet("")
