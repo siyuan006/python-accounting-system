@@ -94,6 +94,23 @@ class Query:
         )
 
 
+class NumericTableItem(QTableWidgetItem):
+    """显示格式化文本、但按真实数值排序的单元格（金额 / ID 需要）。"""
+
+    def __init__(self, value, text):
+        super().__init__(text)
+
+        self._value = value
+        self.setFlags(
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        )
+
+    def __lt__(self, other):
+        if isinstance(other, NumericTableItem):
+            return self._value < other._value
+        return super().__lt__(other)
+
+
 class AccountDialog(QDialog):
     """添加 / 修改账单的共用对话框。mode 取 "add" 或 "edit"。"""
 
@@ -391,740 +408,252 @@ class FilterPanel(QWidget):
         self.emit_query()
 
 
-class AddAccountDialog(QDialog):
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-
-        self.setWindowTitle("添加账单")
-        self.resize(350, 250)
-
-        # 名称
-        self.name_input = QLineEdit()
-
-        # 金额
-        self.price_input = QLineEdit()
-
-        # 类型
-        self.type_input = QComboBox()
-        self.type_input.addItems([
-            "收入",
-            "支出"
-        ])
-
-        # 日期
-        self.date_input = QDateEdit()
-        self.date_input.setCalendarPopup(True)
-        self.date_input.setDate(QDate.currentDate())
-
-        # 表单
-        form_layout = QFormLayout()
-
-        form_layout.addRow(
-            "名称：",
-            self.name_input
-        )
-
-        form_layout.addRow(
-            "金额：",
-            self.price_input
-        )
-
-        form_layout.addRow(
-            "类型：",
-            self.type_input
-        )
-
-        form_layout.addRow(
-            "日期：",
-            self.date_input
-        )
-
-        # 按钮
-        self.save_button = QPushButton("保存")
-        self.cancel_button = QPushButton("取消")
-
-        button_layout = QHBoxLayout()
-
-        button_layout.addWidget(self.cancel_button)
-        button_layout.addWidget(self.save_button)
-
-        # 整体布局
-        layout = QVBoxLayout()
-
-        layout.addLayout(form_layout)
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
-
-        # 按钮事件
-        self.save_button.clicked.connect(
-            self.save_account
-        )
-
-        self.cancel_button.clicked.connect(
-            self.reject
-        )
-
-    def save_account(self):
-
-        name = self.name_input.text().strip()
-
-        price_text = self.price_input.text().strip()
-
-        account_type = self.type_input.currentText()
-
-        date = self.date_input.date().toString(
-            "yyyy-MM-dd"
-        )
-
-        # 名称不能为空
-        if not name:
-            self.name_input.setFocus()
-            return
-
-        # 金额必须是数字
-        try:
-            price = float(price_text)
-        except ValueError:
-            self.price_input.setFocus()
-            return
-
-        # 金额必须大于 0
-        if price <= 0:
-            self.price_input.setFocus()
-            return
-
-        # 写入数据库
-        result = insert_account(
-            name,
-            price,
-            account_type,
-            date
-        )
-
-        if result:
-            self.accept()
 
 
 class MainWindow(QMainWindow):
+    """主窗口。refresh() 是唯一刷新入口。"""
 
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("我的记账软件")
-        self.resize(1000, 650)
+        self.resize(1040, 700)
 
-        # =========================
-        # 统计信息
-        # =========================
+        self.accounts = []
 
-        self.income_label = QLabel()
-        self.expense_label = QLabel()
-        self.balance_label = QLabel()
+        self.statistics = StatisticsBar()
+        self.filter_panel = FilterPanel()
 
-        self.income_label.setText("总收入：0 元")
-        self.expense_label.setText("总支出：0 元")
-        self.balance_label.setText("余额：0 元")
+        self.table = self._build_table()
 
-        statistics_layout = QHBoxLayout()
+        self.empty_label = QLabel("暂无账单，点击「＋ 添加账单」开始记录")
+        self.empty_label.setObjectName("EmptyHint")
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        statistics_layout.addWidget(self.income_label)
-        statistics_layout.addWidget(self.expense_label)
-        statistics_layout.addWidget(self.balance_label)
+        self.table_stack = QStackedWidget()
+        self.table_stack.addWidget(self.table)
+        self.table_stack.addWidget(self.empty_label)
 
-        # =========================
-        # 查询区域
-        # =========================
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.addWidget(self.statistics)
+        layout.addWidget(self.filter_panel)
+        layout.addWidget(self.table_stack, 1)
+        self.setCentralWidget(central)
 
-        self.search_type = QComboBox()
-        self.start_date = QDateEdit()
-        self.start_date.setCalendarPopup(True)
-        self.start_date.setDate(
-            QDate.currentDate()
+        self._build_menu()
+        self._build_toolbar()
+
+        self.filter_panel.queryRequested.connect(self.run_query)
+
+        self.refresh()
+
+    # =========================
+    # 构建
+    # =========================
+
+    @staticmethod
+    def _build_table():
+        table = QTableWidget(0, len(HEADERS))
+        table.setHorizontalHeaderLabels(HEADERS)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
         )
-
-        self.end_date = QDateEdit()
-        self.end_date.setCalendarPopup(True)
-        self.end_date.setDate(
-            QDate.currentDate()
+        table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
         )
-
-        self.search_type.addItems([
-            "全部账单",
-            "按日期",
-            "按月份",
-            "按日期范围"
-        ])
-
-        self.search_date = QDateEdit()
-        self.search_date.setCalendarPopup(True)
-        self.search_date.setDate(QDate.currentDate())
-
-        self.search_button = QPushButton("查询")
-        self.reset_button = QPushButton("显示全部")
-
-
-        search_layout = QHBoxLayout()
-
-        search_layout.addWidget(
-            QLabel("查询：")
+        table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
         )
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
 
-        search_layout.addWidget(
-            self.search_type
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(
+            COL_NAME, QHeaderView.ResizeMode.Stretch
         )
+        for column in (COL_ID, COL_AMOUNT, COL_TYPE, COL_DATE):
+            header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
 
-        search_layout.addWidget(
-            QLabel("日期：")
-        )
+        table.setSortingEnabled(True)
+        table.sortItems(COL_DATE, Qt.SortOrder.DescendingOrder)
 
-        search_layout.addWidget(
-            self.search_date
-        )
+        return table
 
-        search_layout.addWidget(
-            self.search_button
-        )
+    def _build_menu(self):
+        menu_bar = self.menuBar()
 
-        search_layout.addWidget(
-            self.reset_button
-        )
+        file_menu = menu_bar.addMenu("文件(&F)")
+        file_menu.addAction("导出为 CSV", self.export_csv)
+        file_menu.addSeparator()
+        file_menu.addAction("退出", self.close)
 
+        edit_menu = menu_bar.addMenu("编辑(&E)")
+        edit_menu.addAction("添加账单", self.add_account)
+        edit_menu.addAction("修改账单", self.update_account)
+        edit_menu.addAction("删除账单", self.delete_account)
 
-        # =========================
-        # 顶部按钮
-        # =========================
+        data_menu = menu_bar.addMenu("数据(&D)")
+        data_menu.addAction("备份数据库", self.backup_db)
+        data_menu.addAction("恢复数据库", self.restore_db)
 
-        self.add_button = QPushButton("＋ 添加账单")
+        help_menu = menu_bar.addMenu("帮助(&H)")
+        help_menu.addAction("关于", self.show_about)
 
-        self.delete_button = QPushButton("− 删除账单")
+    def _build_toolbar(self):
+        toolbar = QToolBar("主工具栏")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
 
-        self.update_button = QPushButton("✎ 修改账单")
+        toolbar.addAction("＋ 添加账单", self.add_account)
+        toolbar.addAction("✎ 修改账单", self.update_account)
+        toolbar.addAction("－ 删除账单", self.delete_account)
 
-        # 顶部按钮布局
-        button_layout = QHBoxLayout()
+    # =========================
+    # 数据流：表格与统计的唯一数据源
+    # =========================
 
-        button_layout.addWidget(self.add_button)
-        button_layout.addWidget(self.delete_button)
-        button_layout.addWidget(self.update_button)
+    def refresh(self):
+        """按当前筛选条件重新加载。增删改之后调用，保持筛选不重置。"""
+        self.run_query(self.filter_panel.build_query())
 
-        # =========================
-        # 账单表格
-        # =========================
+    def run_query(self, query):
+        if query.is_range_reversed:
+            QMessageBox.warning(
+                self, "日期错误", "开始日期不能晚于结束日期"
+            )
+            return
 
-        self.table = QTableWidget()
+        accounts = database.search_accounts(**query.to_search_kwargs())
+        self._apply_accounts(accounts)
 
-        self.table.setColumnCount(5)
+    def _apply_accounts(self, accounts):
+        """表格与统计消费同一个列表，结构上不可能脱节。"""
+        self.accounts = accounts
 
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "名称",
-            "金额",
-            "类型",
-            "日期"
-        ])
+        self._fill_table(accounts)
+        self._update_statistics(accounts)
+        self._update_status_bar(accounts)
 
-        # =========================
-        # 主布局
-        # =========================
+        self.table_stack.setCurrentIndex(1 if not accounts else 0)
 
-        main_layout = QVBoxLayout()
-
-        main_layout.addLayout(search_layout)
-
-        # 统计信息
-        main_layout.addLayout(statistics_layout)
-
-        # 操作按钮
-        main_layout.addLayout(button_layout)
-
-        # 账单表格
-        main_layout.addWidget(self.table)
-
-        # 中央窗口
-        central_widget = QWidget()
-
-        central_widget.setLayout(main_layout)
-
-        self.setCentralWidget(central_widget)
-
-        # =========================
-        # 按钮事件
-        # =========================
-
-        self.add_button.clicked.connect(
-            self.open_add_dialog
-        )
-
-        self.delete_button.clicked.connect(
-            self.delete_account
-        )
-
-        self.update_button.clicked.connect(
-            self.update_account
-        )
-        self.search_button.clicked.connect(
-            self.search_accounts
-        )
-
-        self.reset_button.clicked.connect(
-            self.load_accounts
-        )
-
-        # =========================
-        # 加载账单
-        # =========================
-
-        self.load_accounts()
-
-    def load_accounts(self, accounts=None):
-
-        if accounts is None:
-            accounts = get_accounts()
-
+    def _fill_table(self, accounts):
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(accounts))
 
         for row, account in enumerate(accounts):
             self.table.setItem(
-                row,
-                0,
-                QTableWidgetItem(str(account.id))
+                row, COL_ID, NumericTableItem(account.id, str(account.id))
             )
+            self.table.setItem(
+                row, COL_NAME, self._readonly_item(account.name)
+            )
+
+            color = QColor(
+                INCOME_COLOR if account.is_income() else EXPENSE_COLOR
+            )
+
+            amount_item = NumericTableItem(
+                account.price, f"{account.price:,.2f}"
+            )
+            amount_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            amount_item.setForeground(color)
+            self.table.setItem(row, COL_AMOUNT, amount_item)
+
+            type_item = self._readonly_item(account.type)
+            type_item.setForeground(color)
+            self.table.setItem(row, COL_TYPE, type_item)
 
             self.table.setItem(
-                row,
-                1,
-                QTableWidgetItem(account.name)
+                row, COL_DATE, self._readonly_item(account.date)
             )
 
-            self.table.setItem(
-                row,
-                2,
-                QTableWidgetItem(
-                    f"{account.price:.2f}"
-                )
-            )
+        self.table.setSortingEnabled(True)
 
-            self.table.setItem(
-                row,
-                3,
-                QTableWidgetItem(account.type)
-            )
+    @staticmethod
+    def _readonly_item(text):
+        item = QTableWidgetItem(text)
+        item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        )
+        return item
 
-            self.table.setItem(
-                row,
-                4,
-                QTableWidgetItem(account.date)
-            )
-    def open_add_dialog(self):
+    def _update_statistics(self, accounts):
+        income = sum(a.price for a in accounts if a.is_income())
+        expense = sum(a.price for a in accounts if a.is_expense())
+        income_count = sum(1 for a in accounts if a.is_income())
+        expense_count = sum(1 for a in accounts if a.is_expense())
 
-        dialog = AddAccountDialog(self)
+        self.statistics.set_stats(
+            income, expense, income_count, expense_count
+        )
 
-        result = dialog.exec()
+    def _update_status_bar(self, accounts):
+        self.statusBar().showMessage(
+            f"共 {len(accounts)} 条记录 · 双击一行可修改"
+        )
 
-        if result:
-            self.load_accounts()
+    # =========================
+    # 增删改（Task 6 补全菜单与实现）
+    # =========================
 
-#     删除账单方法
-    def delete_account(self):
-
+    def _selected_account(self):
         row = self.table.currentRow()
-
-        # 没有选择任何行
         if row < 0:
-            QMessageBox.warning(
-                self,
-                "提示",
-                "请先选择要删除的账单"
-            )
-            return
+            QMessageBox.warning(self, "提示", "请先选择一条账单")
+            return None
 
-        # 获取账单 ID
-        account_id = int(
-            self.table.item(row, 0).text()
-        )
+        id_item = self.table.item(row, COL_ID)
+        if id_item is None:
+            return None
 
-        # 获取账单名称
-        account_name = self.table.item(
-            row,
-            1
-        ).text()
+        account_id = int(id_item.text())
 
-        # 确认删除
-        reply = QMessageBox.question(
-            self,
-            "确认删除",
-            f"确定要删除「{account_name}」吗？",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No
-        )
+        for account in self.accounts:
+            if account.id == account_id:
+                return account
 
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+        QMessageBox.warning(self, "错误", "找不到这条账单，请刷新后重试")
+        return None
 
-        # 删除数据库记录
-        result = delete_account_db(account_id)
+    def add_account(self):
+        raise NotImplementedError("Task 6 实现")
 
-        if result:
-
-            QMessageBox.information(
-                self,
-                "删除成功",
-                "账单已删除"
-            )
-
-            # 刷新表格
-            self.load_accounts()
-
-        else:
-
-            QMessageBox.warning(
-                self,
-                "删除失败",
-                "没有找到这条账单"
-            )
-
-
-# 修改账单方法
     def update_account(self):
+        raise NotImplementedError("Task 6 实现")
 
-        row = self.table.currentRow()
+    def delete_account(self):
+        raise NotImplementedError("Task 6 实现")
 
-        # 没有选择
-        if row < 0:
-            QMessageBox.warning(
-                self,
-                "提示",
-                "请先选择要修改的账单"
-            )
-            return
+    def export_csv(self):
+        raise NotImplementedError("Task 6 实现")
 
-        # 获取 ID
-        account_id = int(
-            self.table.item(row, 0).text()
-        )
+    def backup_db(self):
+        raise NotImplementedError("Task 6 实现")
 
-        # 从数据库重新获取数据
-        accounts = get_accounts()
+    def restore_db(self):
+        raise NotImplementedError("Task 6 实现")
 
-        account = None
+    def show_about(self):
+        raise NotImplementedError("Task 6 实现")
 
-        for item in accounts:
-            if item.id == account_id:
-                account = item
-                break
 
-        if account is None:
-            QMessageBox.warning(
-                self,
-                "错误",
-                "找不到这条账单"
-            )
-            return
-
-        # 打开修改窗口
-        dialog = UpdateAccountDialog(
-            account,
-            self
-        )
-
-        result = dialog.exec()
-
-        if result:
-            self.load_accounts()
-# 刷新统计方法
-    def load_statistics(
-            self,
-            total_income=None,
-            total_expense=None
-    ):
-
-        if total_income is None or total_expense is None:
-            total_income, total_expense = get_money_count()
-
-        balance = total_income - total_expense
-
-        self.income_label.setText(
-            f"总收入：{total_income:.2f} 元"
-        )
-
-        self.expense_label.setText(
-            f"总支出：{total_expense:.2f} 元"
-        )
-
-        self.balance_label.setText(
-            f"余额：{balance:.2f} 元"
-        )
-        self.load_statistics()
-
-# 查询方法
-    def search_accounts(self):
-
-        search_type = self.search_type.currentText()
-
-        # =========================
-        # 全部账单
-        # =========================
-
-        if search_type == "全部账单":
-            accounts = get_accounts()
-
-            self.load_accounts(accounts)
-
-            return
-
-        # =========================
-        # 按日期
-        # =========================
-
-        if search_type == "按日期":
-            date = self.search_date.date().toString(
-                "yyyy-MM-dd"
-            )
-
-            accounts = get_account_by_date(date)
-
-            total_income, total_expense = (
-                get_money_count_by_date(date)
-            )
-
-            self.load_accounts(accounts)
-
-            self.load_statistics(
-                total_income,
-                total_expense
-            )
-
-            return
-
-        # =========================
-        # 按月份
-        # =========================
-
-        if search_type == "按月份":
-            month = self.search_date.date().toString(
-                "yyyy-MM"
-            )
-
-            accounts = get_account_by_month(month)
-
-            total_income, total_expense = (
-                get_money_count_by_month(month)
-            )
-
-            self.load_accounts(accounts)
-
-            self.load_statistics(
-                total_income,
-                total_expense
-            )
-
-            return
-
-        # =========================
-        # 按日期范围
-        # =========================
-
-        if search_type == "按日期范围":
-
-            start_date = self.start_date.date().toString(
-                "yyyy-MM-dd"
-            )
-
-            end_date = self.end_date.date().toString(
-                "yyyy-MM-dd"
-            )
-
-            # 开始日期不能晚于结束日期
-            if start_date > end_date:
-                QMessageBox.warning(
-                    self,
-                    "日期错误",
-                    "开始日期不能晚于结束日期"
-                )
-
-                return
-
-            accounts = get_accounts_by_date_range(
-                start_date,
-                end_date
-            )
-
-            total_income, total_expense = (
-                get_money_count_by_date_range(
-                    start_date,
-                    end_date
-                )
-            )
-
-            self.load_accounts(accounts)
-
-            self.load_statistics(
-                total_income,
-                total_expense
-            )
-
-class UpdateAccountDialog(QDialog):
-
-    def __init__(self, account, parent=None):
-        super().__init__(parent)
-
-        self.account = account
-
-        self.setWindowTitle("修改账单")
-        self.resize(350, 250)
-
-        # 名称
-        self.name_input = QLineEdit()
-        self.name_input.setText(account.name)
-
-        # 金额
-        self.price_input = QLineEdit()
-        self.price_input.setText(str(account.price))
-
-        # 类型
-        self.type_input = QComboBox()
-        self.type_input.addItems([
-            "收入",
-            "支出"
-        ])
-
-        self.type_input.setCurrentText(
-            account.type
-        )
-
-        # 日期
-        self.date_input = QDateEdit()
-        self.date_input.setCalendarPopup(True)
-
-        date = QDate.fromString(
-            account.date,
-            "yyyy-MM-dd"
-        )
-
-        self.date_input.setDate(date)
-
-        # 表单
-        form_layout = QFormLayout()
-
-        form_layout.addRow(
-            "名称：",
-            self.name_input
-        )
-
-        form_layout.addRow(
-            "金额：",
-            self.price_input
-        )
-
-        form_layout.addRow(
-            "类型：",
-            self.type_input
-        )
-
-        form_layout.addRow(
-            "日期：",
-            self.date_input
-        )
-
-        # 按钮
-        self.save_button = QPushButton("保存")
-        self.cancel_button = QPushButton("取消")
-
-        button_layout = QHBoxLayout()
-
-        button_layout.addWidget(
-            self.cancel_button
-        )
-
-        button_layout.addWidget(
-            self.save_button
-        )
-
-        layout = QVBoxLayout()
-
-        layout.addLayout(form_layout)
-        layout.addLayout(button_layout)
-
-        self.setLayout(layout)
-
-        # 事件
-        self.save_button.clicked.connect(
-            self.save_account
-        )
-
-        self.cancel_button.clicked.connect(
-            self.reject
-        )
-
-    def save_account(self):
-
-        name = self.name_input.text().strip()
-
-        price_text = self.price_input.text().strip()
-
-        account_type = self.type_input.currentText()
-
-        date = self.date_input.date().toString(
-            "yyyy-MM-dd"
-        )
-
-        # 名称不能为空
-        if not name:
-            QMessageBox.warning(
-                self,
-                "输入错误",
-                "名称不能为空"
-            )
-            return
-
-        # 金额必须是数字
-        try:
-            price = float(price_text)
-
-        except ValueError:
-            QMessageBox.warning(
-                self,
-                "输入错误",
-                "金额必须是数字"
-            )
-            return
-
-        # 金额必须大于 0
-        if price <= 0:
-            QMessageBox.warning(
-                self,
-                "输入错误",
-                "金额必须大于 0"
-            )
-            return
-
-        result = update_account_db(
-            self.account.id,
-            name,
-            price,
-            account_type,
-            date
-        )
-
-        if result:
-            self.accept()
-
-        else:
-            QMessageBox.warning(
-                self,
-                "修改失败",
-                "账单不存在"
-            )
-
-if __name__ == "__main__":
+def main():
+    create_table()
 
     app = QApplication(sys.argv)
+    app.setStyleSheet(STYLE_SHEET)
 
     window = MainWindow()
-
     window.show()
 
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

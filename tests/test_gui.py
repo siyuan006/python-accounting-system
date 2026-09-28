@@ -1,5 +1,5 @@
-from PyQt6.QtCore import QDate
-from PyQt6.QtWidgets import QDateEdit, QDialog
+from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtWidgets import QAbstractItemView, QDateEdit, QDialog
 
 import database
 import GUI
@@ -302,3 +302,225 @@ def test_filter_panel_reset_restores_defaults_and_emits(qt_app):
     assert query.keyword == ""
     assert query.account_type is None
     assert panel.keyword_input.text() == ""
+
+
+# =========================
+# MainWindow：渲染与统计
+# =========================
+
+def make_window():
+    return GUI.MainWindow()
+
+
+def row_of(window, name):
+    for row in range(window.table.rowCount()):
+        if window.table.item(row, GUI.COL_NAME).text() == name:
+            return row
+    raise AssertionError(f"表格中没有「{name}」")
+
+
+def test_startup_lists_every_account(qt_app, gui_db):
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+    database.insert_account("餐饮", 100, "支出", days_ago(2))
+
+    window = make_window()
+
+    assert window.table.rowCount() == 2
+
+
+def test_date_query_does_not_recurse(qt_app, gui_db):
+    """缺陷 #1 回归：旧 load_statistics 自递归，按日期查询必崩。"""
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.filter_panel.mode_input.setCurrentIndex(1)
+    window.filter_panel.day_input.setDate(QDate.currentDate().addDays(-3))
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+    assert window.statistics.income_card.amount_label.text() == "¥ 5,000.00"
+
+
+def test_month_query_does_not_recurse(qt_app, gui_db):
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.filter_panel.mode_input.setCurrentIndex(2)
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+
+
+def test_range_query_does_not_recurse(qt_app, gui_db):
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.filter_panel.mode_input.setCurrentIndex(3)
+    window.filter_panel.start_input.setDate(QDate.currentDate().addDays(-10))
+    window.filter_panel.end_input.setDate(QDate.currentDate())
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+
+
+def test_statistics_match_displayed_rows(qt_app, gui_db):
+    """缺陷 #2 回归：统计标签启动时不再恒为 0。"""
+    database.insert_account("工资", 8500, "收入", days_ago(5))
+    database.insert_account("餐饮", 200, "支出", days_ago(4))
+    database.insert_account("购物", 3000, "支出", days_ago(3))
+
+    window = make_window()
+
+    assert window.statistics.income_card.amount_label.text() == "¥ 8,500.00"
+    assert window.statistics.expense_card.amount_label.text() == "¥ 3,200.00"
+    assert window.statistics.balance_card.amount_label.text() == "¥ 5,300.00"
+    assert window.statistics.income_card.count_label.text() == "1 笔"
+    assert window.statistics.expense_card.count_label.text() == "2 笔"
+
+
+def test_filtered_statistics_only_count_matching_rows(qt_app, gui_db):
+    database.insert_account("工资", 8500, "收入", days_ago(5))
+    database.insert_account("餐饮", 200, "支出", days_ago(4))
+
+    window = make_window()
+    window.filter_panel.type_input.setCurrentText("支出")
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+    assert window.statistics.income_card.amount_label.text() == "¥ 0.00"
+    assert window.statistics.expense_card.amount_label.text() == "¥ 200.00"
+
+
+def test_keyword_filter_matches_name(qt_app, gui_db):
+    database.insert_account("餐饮", 200, "支出", days_ago(4))
+    database.insert_account("工资", 8500, "收入", days_ago(5))
+
+    window = make_window()
+    window.filter_panel.keyword_input.setText("餐饮")
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+    assert window.table.item(0, GUI.COL_NAME).text() == "餐饮"
+
+
+def test_empty_database_shows_placeholder(qt_app, gui_db):
+    window = make_window()
+
+    assert window.table.rowCount() == 0
+    assert window.table_stack.currentIndex() == 1
+    assert window.statistics.income_card.amount_label.text() == "¥ 0.00"
+    assert "共 0 条" in window.statusBar().currentMessage()
+
+
+def test_placeholder_hides_once_data_exists(qt_app, gui_db):
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+
+    assert window.table_stack.currentIndex() == 0
+
+
+def test_reversed_range_keeps_previous_results(qt_app, gui_db, monkeypatch):
+    monkeypatch.setattr(
+        GUI.QMessageBox, "warning", lambda *args, **kwargs: None
+    )
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    assert window.table.rowCount() == 1
+
+    window.filter_panel.mode_input.setCurrentIndex(3)
+    window.filter_panel.start_input.setDate(QDate.currentDate())
+    window.filter_panel.end_input.setDate(QDate.currentDate().addDays(-10))
+    window.filter_panel.emit_query()
+
+    assert window.table.rowCount() == 1
+
+
+def test_table_cells_are_not_editable(qt_app, gui_db):
+    """缺陷 #7 回归：单元格可编辑但改动不落库，是数据完整性陷阱。"""
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+
+    assert (
+        window.table.editTriggers()
+        == QAbstractItemView.EditTrigger.NoEditTriggers
+    )
+
+    for column in range(window.table.columnCount()):
+        flags = window.table.item(0, column).flags()
+        assert not (flags & Qt.ItemFlag.ItemIsEditable)
+
+
+def test_income_and_expense_rows_are_colored(qt_app, gui_db):
+    database.insert_account("工资", 5000, "收入", days_ago(5))
+    database.insert_account("餐饮", 200, "支出", days_ago(4))
+
+    window = make_window()
+
+    income_row = row_of(window, "工资")
+    expense_row = row_of(window, "餐饮")
+
+    assert (
+        window.table.item(income_row, GUI.COL_AMOUNT)
+        .foreground().color().name()
+        == GUI.INCOME_COLOR
+    )
+    assert (
+        window.table.item(expense_row, GUI.COL_AMOUNT)
+        .foreground().color().name()
+        == GUI.EXPENSE_COLOR
+    )
+
+
+def test_rows_sorted_by_date_descending(qt_app, gui_db):
+    database.insert_account("早", 10, "支出", days_ago(10))
+    database.insert_account("晚", 10, "支出", days_ago(1))
+
+    window = make_window()
+
+    assert window.table.item(0, GUI.COL_NAME).text() == "晚"
+    assert window.table.item(1, GUI.COL_NAME).text() == "早"
+
+
+def test_amount_column_sorts_numerically(qt_app, gui_db):
+    database.insert_account("小", 9, "支出", days_ago(2))
+    database.insert_account("大", 1000, "支出", days_ago(1))
+
+    window = make_window()
+    window.table.sortItems(GUI.COL_AMOUNT, Qt.SortOrder.AscendingOrder)
+
+    assert window.table.item(0, GUI.COL_NAME).text() == "小"
+    assert window.table.item(1, GUI.COL_NAME).text() == "大"
+
+
+def test_selected_account_looks_up_by_id_not_row(qt_app, gui_db, monkeypatch):
+    monkeypatch.setattr(
+        GUI.QMessageBox, "warning", lambda *args, **kwargs: None
+    )
+    database.insert_account("小", 9, "支出", days_ago(2))
+    database.insert_account("大", 1000, "支出", days_ago(1))
+
+    window = make_window()
+    window.table.sortItems(GUI.COL_AMOUNT, Qt.SortOrder.AscendingOrder)
+    window.table.setCurrentCell(0, 0)
+
+    assert window._selected_account().name == "小"
+
+
+def test_selected_account_warns_when_nothing_selected(qt_app, gui_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        GUI.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: calls.append(args),
+    )
+    database.insert_account("工资", 5000, "收入", days_ago(3))
+
+    window = make_window()
+    window.table.clearSelection()
+    window.table.setCurrentCell(-1, -1)
+
+    assert window._selected_account() is None
+    assert len(calls) == 1
